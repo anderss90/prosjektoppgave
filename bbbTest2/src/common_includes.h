@@ -54,9 +54,9 @@ typedef struct velocity {
 }velocity_t;
 
 typedef struct validity {
-	double x;
-	double y;
-	double z;
+	bool x;
+	bool y;
+	bool z;
 }validity_t;
 
 // all angles in radians

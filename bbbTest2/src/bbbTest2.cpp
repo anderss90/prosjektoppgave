@@ -12,7 +12,10 @@
 #include "imu.h"
 #include "ins.h"
 #include "hcsr04/hcsr04.h"
+#include <pthread.h>
 using namespace std;
+
+
 
 
 #define N_BLINKS 10
@@ -20,9 +23,19 @@ int n_loops= 10*1000*1000;
 
 char * LEDBrightness = "/sys/bus/platform/devices/gpio-leds.8/leds/beaglebone:green:usr3/brightness";
 FILE *LEDHandle = NULL;
+pthread_t ins_thread;
 
 
 void led_blinking(int n_blinks);
+
+void * ins_thread_function(void* arg){
+	while (1){
+		ins_update();
+		usleep(1000*(1000/imu_update_frequency));
+	}
+	return NULL;
+
+}
 
 void mpu_6050_testing()
 {
@@ -59,6 +72,7 @@ void ins_testing(){
 
 int main(int argc, char **argv){
 	printf("Main");
+	ins_init();
 	if(argc>1){
 		if(strcmp(argv[1],"imu")==0){
 			mpu_6050_testing();
@@ -68,7 +82,12 @@ int main(int argc, char **argv){
 		}
 	}
 	else {
+		if (pthread_create(&ins_thread,NULL,ins_thread_function,NULL)){
+			printf("Error creating ins thread, exiting");
+			exit(-1);
+		}
 		hcsr04_testing();
+		pthread_join(ins_thread,NULL);
 	}
 	return 0;
 }
