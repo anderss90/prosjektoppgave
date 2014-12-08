@@ -11,6 +11,7 @@
 #define g_n -9.81f
 
 state_t m_state;
+pthread_mutex_t ins_state_mutex;
 
 int ins_init(){
 
@@ -67,6 +68,8 @@ int ins_update(){
 
 	float dt = (1.0f / ins_update_frequency);
 
+	//m_state is protected with a mutex
+	pthread_mutex_lock(&ins_state_mutex);
 	//integrate acc to vel
 	m_state.velocity.x+=v_xdot*dt;
 	m_state.velocity.y+=v_ydot*dt;
@@ -84,13 +87,16 @@ int ins_update(){
 	m_state.angle_velocity.pitch=gyro_reading_rad.pitch;
 	m_state.angle_velocity.roll=gyro_reading_rad.roll;
 	m_state.angle_velocity.yaw=gyro_reading_rad.yaw;
+	pthread_mutex_unlock(&ins_state_mutex);
 	return SUCCESS;
 }
 
 int ins_get_state(state_t * returned_state){
 
+	pthread_mutex_lock(&ins_state_mutex);
 	//*returned_state=m_state;
 	memcpy(returned_state,&m_state,sizeof(state_t));
+	pthread_mutex_unlock(&ins_state_mutex);
 	return SUCCESS;
 }
 

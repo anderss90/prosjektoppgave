@@ -26,6 +26,8 @@ enum {IMU,INS,SONAR};
 #define ins_update_frequency 50.0f
 #define sonar_update_frequency 10.0f
 
+#define LOG_TIME 15
+
 //Sonars
 #define N_SONARS 6
 

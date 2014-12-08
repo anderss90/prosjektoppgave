@@ -21,6 +21,8 @@
 #define MPU6050_GYGAIN 16.4
 #define MPU6050_GZGAIN 16.4
 
+#define roll_strapdown_offset -9.0f
+
 //mahoney-filter
 #define mpu6050_mahonysampleFreq 50.0 // sample frequency in Hz
 #define mpu6050_mahonytwoKpDef (4.0) // 2 * proportional gain

@@ -179,5 +179,7 @@ int imu_update(){
 	roll = rad_to_deg(atan2(2*q2*q3 - 2*q0*q1, 2*q0*q0 + 2*q3*q3 - 1));
 	yaw = rad_to_deg(atan2(2*q1*q2 - 2*q0*q3, 2*q0*q0 + 2*q1*q1 - 1));
 
+	roll-=roll_strapdown_offset;
+
 	return SUCCESS;
 }

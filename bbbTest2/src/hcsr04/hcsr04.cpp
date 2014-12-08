@@ -9,21 +9,66 @@
 sonar_system_state_t sonar_system_state;
 sonar_system_state_t prev_sonar_system_state;
 sonar_t sonars[N_SONARS];
+pthread_mutex_t sonar_state_mutex;
 
 //these are obtained from the fusion, do not write to these
 state_t current_state;
 state_t prev_state;
 
+FILE *sonar_log;
+
+int log_time_ms=0;
+
+
 enum {FRONT,
 	BACK,
 	LEFT,
+	RIGHT,
 	DOWN,
-	UP,
-	RIGHT};
+	UP};
 
 unsigned int *pruData;
 float sonar_offset[N_SONARS];
-char *sonar_names[N_SONARS]={"front", "back", "left", "down", "up", "right"};
+char *sonar_names[N_SONARS]={"front", "back", "left", "right", "down", "up"};
+
+int hcsr04_init(void) {
+	sonar_log = fopen("sonar_log.dat", "w");
+	fprintf(sonar_log,"# LEGEND: sonar n distance, sonar n validity. \n");
+	/* Initialize the PRU */
+	printf(">> Initializing PRU\n");
+	tpruss_intc_initdata pruss_intc_initdata = PRUSS_INTC_INITDATA;
+	prussdrv_init();
+
+	/* Open PRU Interrupt */
+	if (prussdrv_open (PRU_EVTOUT_0)) {
+		// Handle failure
+		fprintf(stderr, ">> PRU open failed\n");
+		return 1;
+	}
+
+	/* Get the interrupt initialized */
+	prussdrv_pruintc_init(&pruss_intc_initdata);
+
+	/* Get pointers to PRU local memory */
+	void *pruDataMem;
+	prussdrv_map_prumem(PRUSS0_PRU0_DATARAM, &pruDataMem);
+	pruData = (unsigned int *) pruDataMem;
+
+	/* Execute code on PRU */
+	printf(">> Executing HCSR-04 code\n");
+	prussdrv_exec_program(0, "/root/remoteTest2/hcsr04/hcsr04.bin");
+
+	//init sonar objects.
+	for (int i=0;i<N_SONARS;i++){
+		hcsr04_sonar_reset(i);
+	}
+
+	//init state objects
+	memset(&current_state,0,sizeof(state_t));
+	memset(&prev_state,0,sizeof(state_t));
+	return SUCCESS;
+}
+
 
 int hcsr04_sonar_reset(int sonar_index){
 	sonars[sonar_index].avg_distance_cm=0;
@@ -66,42 +111,7 @@ int hcsr04_sonar_reset_offset(sonar_t* sonar){
 	return SUCCESS;
 }
 
-int hcsr04_init(void) {
 
-	/* Initialize the PRU */
-	printf(">> Initializing PRU\n");
-	tpruss_intc_initdata pruss_intc_initdata = PRUSS_INTC_INITDATA;
-	prussdrv_init();
-
-	/* Open PRU Interrupt */
-	if (prussdrv_open (PRU_EVTOUT_0)) {
-		// Handle failure
-		fprintf(stderr, ">> PRU open failed\n");
-		return 1;
-	}
-
-	/* Get the interrupt initialized */
-	prussdrv_pruintc_init(&pruss_intc_initdata);
-
-	/* Get pointers to PRU local memory */
-	void *pruDataMem;
-	prussdrv_map_prumem(PRUSS0_PRU0_DATARAM, &pruDataMem);
-	pruData = (unsigned int *) pruDataMem;
-
-	/* Execute code on PRU */
-	printf(">> Executing HCSR-04 code\n");
-	prussdrv_exec_program(0, "/root/remoteTest2/hcsr04/hcsr04.bin");
-
-	//init sonar objects.
-	for (int i=0;i<N_SONARS;i++){
-		hcsr04_sonar_reset(i);
-	}
-
-	//init state objects
-	memset(&current_state,0,sizeof(state_t));
-	memset(&prev_state,0,sizeof(state_t));
-	return SUCCESS;
-}
 
 int hcsr04_read(uint32_t* distances){
 	// Wait for the PRU interrupt
@@ -118,9 +128,11 @@ int hcsr04_read(uint32_t* distances){
 
 int hcsr04_close(void){
 	/* Disable PRU and close memory mapping*/
+	printf("hcsr04_close()");
 	prussdrv_pru_disable(0);
 	prussdrv_exit();
 	printf(">> PRU Disabled.\r\n");
+	fclose(sonar_log);
 	return SUCCESS;
 }
 
@@ -142,36 +154,32 @@ int hcsr04_evaluate_sonar_validity(void){
 			//printf("distance: %.2f \t avg: %.2f\t diff: %.2f\t ", cur_son->distance_cm,cur_son->avg_distance_cm,(cur_son->distance_cm - cur_son->avg_distance_cm));
 			//cur_son->validity=false;
 			temp_validity=false;
-			//("not avg \t");
+			//printf("not avg \t");
+			//printf ("%s: %.2f\t diff:%f\t",sonar_names[i],cur_son->distance_cm,fabs(cur_son->distance_cm - cur_son->avg_distance_cm));
 		}
 		//printf ("%.2f\t",(float)cur_son->avg_distance_cm);
-		//printf ("%s: %.2f\t %i\t",sonar_names[i],cur_son->distance_cm,abs((int)(cur_son->distance_cm - cur_son->avg_distance_cm)));
-
-
-		//check IMU readings to evaluate validity of sonar readings
-		//TODO call update_system_state before this.
 
 		//check if attitude is within maximum
 		if ((fabs(current_state.attitude.pitch)>sonar_max_attitude_rad) ||
 			(fabs(current_state.attitude.roll)>sonar_max_attitude_rad)
-			/* || /*TODO commented until total system gives feedback to yaw drift (fabs(current_state.attitude.yaw)>sonar_max_attitude_rad)*/
+			/* || TODO commented until total system gives feedback to yaw drift (fabs(current_state.attitude.yaw)>sonar_max_attitude_rad)*/
 			)
 		{
 			//cur_son->validity=false;
 			temp_validity=false;
-			printf("WHATT");
+			printf("ANGLE TOO BIG");
 			printf ("pitch: %.2f\t roll: %.2f\t",current_state.attitude.pitch,current_state.attitude.roll);
 		}
 
 		//check if angle velocity if within max
-		if ((fabs(current_state.angle_velocity.pitch)>sonar_max_attitude_rate_rad) ||
-			(fabs(current_state.angle_velocity.roll)>sonar_max_attitude_rate_rad)
+		if ((fabs(current_state.angle_velocity.pitch)>sonar_max_attitude_rate_rad)
+			|| (fabs(current_state.angle_velocity.roll)>sonar_max_attitude_rate_rad)
 			||(fabs(current_state.angle_velocity.yaw)>sonar_max_attitude_rate_rad)
 			)
 		{
 			//cur_son->validity=false;
 			temp_validity=false;
-			printf("YO");
+			printf("ANGLE_VEL TOO HIGH");
 		}
 		//printf("%i\t",cur_son->validity);
 
@@ -184,6 +192,12 @@ int hcsr04_evaluate_sonar_validity(void){
 		}
 		//update validity
 		cur_son->validity=temp_validity;
+
+
+		//TODO DEBUG setting UP to invalid always because of test rig in the way
+		if (i==UP){
+			cur_son->validity=false;
+		}
 
 	}
 
@@ -249,8 +263,7 @@ int hcsr04_evaluate_sonar_pair(sonar_pair_t* s_pair){
 		}
 
 	//multiply correct signs with positions
-	a_pos=a_pos*a_sign;
-	b_pos=b_pos*b_sign;
+
 	a_pos=a_sign*a_distance-s_pair->sonar_a->offset_cm;
 	b_pos=b_sign*b_distance-s_pair->sonar_b->offset_cm;
 
@@ -287,14 +300,15 @@ int hcsr04_evaluate_sonar_pair(sonar_pair_t* s_pair){
 	}
 
 	if (s_pair->axis==Y){
-		printf("a_d:%.2f\t a_os:%.2f\t a_pos:%.2f\t b_d:%.2f\t b_os:%.2f\t b_pos:%.2f\t  a_val:%i b_val:%i y_pos:%.2f\t",
-				a_distance,sonar_a->offset_cm,a_pos,b_distance,sonar_b->offset_cm,b_pos,a_valid,b_valid,s_pair->position);
+		//printf("a_d:%.2f\t a_os:%.2f\t a_pos:%.2f\t b_d:%.2f\t b_os:%.2f\t b_pos:%.2f\t  a_val:%i b_val:%i y_pos:%.2f\t",	a_distance,sonar_a->offset_cm,a_pos,b_distance,sonar_b->offset_cm,b_pos,a_valid,b_valid,s_pair->position);
 	}
 
 	return SUCCESS;
 }
 
 int hcsr04_evaluate_xyz(void){
+
+	pthread_mutex_lock(&sonar_state_mutex);
 	//store previous sonar system state
 	memcpy(&prev_sonar_system_state,&sonar_system_state,sizeof(sonar_system_state_t));
 
@@ -349,6 +363,7 @@ int hcsr04_evaluate_xyz(void){
 	//printf("x:%.2f\t y:%.2f\t z:%.2f\t x_dot:%.2f\t",sonar_system_state.position.x,sonar_system_state.position.y,sonar_system_state.position.z,sonar_system_state.velocity.x);
 
 
+	pthread_mutex_unlock(&sonar_state_mutex);
 	return SUCCESS;
 }
 
@@ -403,28 +418,30 @@ void debug_print(void){
 	//printf("x:%.2f\t y:%.2f\t z:%.2f\t x_dot:%.2f\t",sonar_system_state.position.x,sonar_system_state.position.y,sonar_system_state.position.z,sonar_system_state.velocity.x);
 	//y test
 	//printf("right:%.2f\t right_valid:%i\t  left: %.2f\t left_valid:%i\t y: %.2f\t y_valid: %i\t ",sonars[RIGHT].distance_cm,sonars[RIGHT].validity,sonars[LEFT].distance_cm,sonars[LEFT].validity,sonar_system_state.position.y, sonar_system_state.pos_validity.y);
+	printf("%i\t %.2f\t %i\t %.2f\t %i\t %.2f\t %i\t %.2f\t %i\t %.2f\t %i\t %.2f\t %i\n",log_time_ms,sonars[FRONT].distance_cm,sonars[FRONT].validity,sonars[BACK].distance_cm,sonars[BACK].validity,
+				sonars[RIGHT].distance_cm,sonars[RIGHT].validity,sonars[LEFT].distance_cm,sonars[LEFT].validity,sonars[DOWN].distance_cm,sonars[DOWN].validity,sonars[UP].distance_cm,sonars[UP].validity);
+	//printf("\n");
+}
+
+int hcsr04_get_state(sonar_system_state_t * returned_state){
+	pthread_mutex_lock(&sonar_state_mutex);
+	memcpy(returned_state,&sonar_system_state,sizeof(sonar_system_state));
+	pthread_mutex_unlock(&sonar_state_mutex);
+	return SUCCESS;
 }
 
 int hcsr04_testing(void){
-	hcsr04_init();
-	while(1){
-		/*
-		hcsr04_read(results);
-		for (int i=0;i<N_SONARS;i++){
-			printf("Sonar %i: %.2f ",i+1,(float)results[i]/58.44);
-		}
-		printf("\n");*/
-		//doing this in separate thread ins_update();
 
-		hcsr04_update_distances();
-		hcsr04_update_system_state();
-		hcsr04_evaluate_sonar_validity();
-		hcsr04_evaluate_xyz();
-		printf("\n");
-		usleep(1000*1000*(1/sonar_update_frequency));
+	hcsr04_update_distances();
+	hcsr04_update_system_state();
+	hcsr04_evaluate_sonar_validity();
+	hcsr04_evaluate_xyz();
 
-		debug_print();
-
-	}
+	//log stuff
+	fprintf(sonar_log,"%i\t %.2f\t %i\t %.2f\t %i\t %.2f\t %i\t %.2f\t %i\t %.2f\t %i\t %.2f\t %i\n",log_time_ms,sonars[FRONT].distance_cm,sonars[FRONT].validity,sonars[BACK].distance_cm,sonars[BACK].validity,
+			sonars[RIGHT].distance_cm,sonars[RIGHT].validity,sonars[LEFT].distance_cm,sonars[LEFT].validity,sonars[DOWN].distance_cm,sonars[DOWN].validity,sonars[UP].distance_cm,sonars[UP].validity);
+	log_time_ms+=100;
+	debug_print();
 	return SUCCESS;
 }
+
